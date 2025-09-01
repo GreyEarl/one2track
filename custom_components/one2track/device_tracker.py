@@ -3,12 +3,11 @@ from datetime import timedelta, datetime
 from typing import List
 
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 import async_timeout
 from homeassistant.components.zone import async_active_zone
 from homeassistant.components.device_tracker.config_entry import TrackerEntity
-from homeassistant.core import callback
 from homeassistant.helpers.update_coordinator import (
     CoordinatorEntity,
     DataUpdateCoordinator,
@@ -16,20 +15,17 @@ from homeassistant.helpers.update_coordinator import (
 )
 
 from .client import GpsClient, TrackerDevice
-from .common import (
-    DOMAIN, DEFAULT_UPDATE_RATE_MIN
-)
+from .common import DOMAIN, DEFAULT_UPDATE_RATE_MIN
 
 LOGGER = logging.getLogger(__name__)
 
 
 async def async_setup_entry(
-        hass: HomeAssistant,
-        entry: ConfigEntry,
-        async_add_entities: AddEntitiesCallback,
+    hass: HomeAssistant,
+    entry: ConfigEntry,
+    async_add_entities: AddEntitiesCallback,
 ) -> None:
     """Add an entry."""
-    # Add the needed sensors to hass
     LOGGER.debug("one2track async_setup_entry")
 
     gps_api: GpsClient = hass.data[DOMAIN][entry.entry_id]['api_client']
@@ -61,9 +57,7 @@ class GpsCoordinator(DataUpdateCoordinator):
         super().__init__(
             hass,
             LOGGER,
-            # Name of the data. For logging purposes.
             name="One2Track",
-            # Polling interval. Will only be polled if there are subscribers.
             update_interval=timedelta(minutes=DEFAULT_UPDATE_RATE_MIN),
             always_update=False
         )
@@ -74,8 +68,6 @@ class GpsCoordinator(DataUpdateCoordinator):
     async def _async_update_data(self):
         """Fetch data from API endpoint."""
         try:
-            # Note: asyncio.TimeoutError and aiohttp.ClientError are already
-            # handled by the data update coordinator.
             async with async_timeout.timeout(300):
                 data = await (await self.hass.async_add_executor_job(
                     self.gps_api.update
@@ -94,21 +86,14 @@ class GpsCoordinator(DataUpdateCoordinator):
                     return None
 
         except Exception as err:
-            LOGGER.error("Error in updating updater")
-            LOGGER.error(err)
+            LOGGER.error("Error in updating updater: %s", err)
             raise UpdateFailed(err)
 
 
 class One2TrackSensor(CoordinatorEntity, TrackerEntity):
     _device: TrackerDevice
 
-    def __init__(
-            self,
-            coordinator,
-            hass: HomeAssistant,
-            entry: ConfigEntry,
-            device: TrackerDevice
-    ) -> None:
+    def __init__(self, coordinator, hass: HomeAssistant, entry: ConfigEntry, device: TrackerDevice) -> None:
         super().__init__(coordinator)
         self._hass = hass
         self._entry = entry
@@ -128,12 +113,12 @@ class One2TrackSensor(CoordinatorEntity, TrackerEntity):
 
     def async_device_changed(self):
         """Send changed data to HA"""
-        LOGGER.debug("%s (%d) advising HA of update", self.name, self.unique_id)
+        LOGGER.debug("%s (%s) advising HA of update", self.name, self.unique_id)
         self.async_schedule_update_ha_state()
 
     @property
     def location_accuracy(self):
-        """Return the gps accuracy of the device. In accuracy in meters"""
+        """Return the gps accuracy of the device in meters."""
         return 10  # TODO check signal strength
 
     @property
@@ -170,7 +155,7 @@ class One2TrackSensor(CoordinatorEntity, TrackerEntity):
             "last_location_update": self._device['last_location']['last_location_update'],
             "altitude": self._device['last_location']['altitude'],
             "location_type": self._device['last_location']['location_type'],
-            "address": self._device['last_location']['address'],
+            "address": self._device['last_location']['address'],  # keep address here only
             "signal_strength": self._device['last_location']['signal_strength'],
             "satellite_count": self._device['last_location']['satellite_count'],
             "host": self._device['last_location']['host'],
@@ -181,19 +166,6 @@ class One2TrackSensor(CoordinatorEntity, TrackerEntity):
     def battery_level(self):
         """Return battery value of the device."""
         return self._device["last_location"]["battery_percentage"]
-
-@property
-def location_name(self):
-    """Return the zone name or not_home."""
-    try:
-        zone = async_active_zone(self._hass, self.latitude, self.longitude, 0)
-        if zone:
-            return zone.name  # e.g. "home", "work", etc.
-    except Exception as err:
-        LOGGER.error(f"Cannot get zone for tracker: {err}")
-
-    return "not_home"
-
 
     @property
     def latitude(self):
@@ -209,6 +181,33 @@ def location_name(self):
     def unique_id(self):
         """Return the unique ID."""
         return self._device['uuid']
+
+    #
+    # ---- FIXED SECTION ----
+    #
+    @property
+    def location_name(self):
+        """Return a location name for the current location of the device.
+
+        This must always be 'home', 'not_home', or a zone name.
+        """
+        try:
+            zone = async_active_zone(self._hass, self.latitude, self.longitude, 0)
+            if zone:
+                return zone.name  # valid zone (e.g. "home", "Work")
+        except Exception as err:
+            LOGGER.error("Cannot get zone for tracker: %s", err)
+
+        return "not_home"
+
+    @property
+    def state(self):
+        """Explicitly define the entity state for HA."""
+        # Always return a valid tracker state string
+        return self.location_name
+    #
+    # -----------------------
+    #
 
     async def async_added_to_hass(self):
         """Register state update callback."""
@@ -226,7 +225,7 @@ def location_name(self):
         if me:
             self._device = me
         else:
-            LOGGER.error(f"Tracker {self.unique_id} not found in new data: {new_data}")
+            LOGGER.error("Tracker %s not found in new data: %s", self.unique_id, new_data)
 
     @callback
     def _handle_coordinator_update(self) -> None:
