@@ -19,6 +19,8 @@ from .common import DOMAIN, DEFAULT_UPDATE_RATE_MIN
 
 LOGGER = logging.getLogger(__name__)
 
+STALE_AFTER_MINUTES = 20  # mark tracker as unknown if no update in X minutes
+
 
 async def async_setup_entry(
     hass: HomeAssistant,
@@ -100,6 +102,7 @@ class One2TrackSensor(CoordinatorEntity, TrackerEntity):
         self._device = device
         self._attr_unique_id = device['uuid']
         self._attr_name = f"one2track_{device['name']}"
+        self._stale = False  # track staleness
 
     @property
     def name(self):
@@ -141,7 +144,7 @@ class One2TrackSensor(CoordinatorEntity, TrackerEntity):
     @property
     def extra_state_attributes(self):
         """Return device specific attributes."""
-        return {
+        attrs = {
             "serial_number": self._device['serial_number'],
             "uuid": self._device['uuid'],
             "name": self._device['name'],
@@ -155,12 +158,16 @@ class One2TrackSensor(CoordinatorEntity, TrackerEntity):
             "last_location_update": self._device['last_location']['last_location_update'],
             "altitude": self._device['last_location']['altitude'],
             "location_type": self._device['last_location']['location_type'],
-            "address": self._device['last_location']['address'],  # keep address here only
+            "address": self._device['last_location']['address'],  # keep address in attributes
             "signal_strength": self._device['last_location']['signal_strength'],
             "satellite_count": self._device['last_location']['satellite_count'],
             "host": self._device['last_location']['host'],
             "port": self._device['last_location']['port'],
         }
+
+        # add staleness flag
+        attrs["stale"] = self._stale
+        return attrs
 
     @property
     def battery_level(self):
@@ -182,19 +189,13 @@ class One2TrackSensor(CoordinatorEntity, TrackerEntity):
         """Return the unique ID."""
         return self._device['uuid']
 
-    #
-    # ---- FIXED SECTION ----
-    #
     @property
     def location_name(self):
-        """Return a location name for the current location of the device.
-
-        This must always be 'home', 'not_home', or a zone name.
-        """
+        """Return zone name if in zone, else not_home."""
         try:
             zone = async_active_zone(self._hass, self.latitude, self.longitude, 0)
             if zone:
-                return zone.name  # valid zone (e.g. "home", "Work")
+                return zone.name
         except Exception as err:
             LOGGER.error("Cannot get zone for tracker: %s", err)
 
@@ -203,11 +204,24 @@ class One2TrackSensor(CoordinatorEntity, TrackerEntity):
     @property
     def state(self):
         """Explicitly define the entity state for HA."""
-        # Always return a valid tracker state string
+        try:
+            last_update_str = self._device['last_location']['last_location_update']
+            if last_update_str:
+                # Example: "September 1, 2025 at 7:37:53 PM"
+                try:
+                    last_update = datetime.strptime(
+                        last_update_str, "%B %d, %Y at %I:%M:%S %p"
+                    )
+                    if datetime.now() - last_update > timedelta(minutes=STALE_AFTER_MINUTES):
+                        self._stale = True
+                        return "unknown"
+                except ValueError as err:
+                    LOGGER.error("Failed to parse last update time '%s': %s", last_update_str, err)
+        except Exception as err:
+            LOGGER.error("Error checking staleness: %s", err)
+
+        self._stale = False
         return self.location_name
-    #
-    # -----------------------
-    #
 
     async def async_added_to_hass(self):
         """Register state update callback."""
