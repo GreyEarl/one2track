@@ -182,17 +182,18 @@ class One2TrackSensor(CoordinatorEntity, TrackerEntity):
         """Return battery value of the device."""
         return self._device["last_location"]["battery_percentage"]
 
-    @property
-    def location_name(self):
-        """Return a location name for the current location of the device."""
-        try:
-            zone_name = async_active_zone(self._hass, self.latitude, self.longitude, 0)
-            if zone_name:
-                return zone_name.name
-        except Exception as err:
-            LOGGER.error(f"Cannot get zone for tracker: {err}")
+@property
+def location_name(self):
+    """Return the zone name or not_home."""
+    try:
+        zone = async_active_zone(self._hass, self.latitude, self.longitude, 0)
+        if zone:
+            return zone.name  # e.g. "home", "work", etc.
+    except Exception as err:
+        LOGGER.error(f"Cannot get zone for tracker: {err}")
 
-        return self._device['last_location']['address']
+    return "not_home"
+
 
     @property
     def latitude(self):
